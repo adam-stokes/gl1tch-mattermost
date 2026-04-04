@@ -1,0 +1,17 @@
+name: mattermost
+description: "Mattermost integration — monitor mentions, DMs, and channel messages"
+binary: glitch-mattermost
+install:
+  release: true
+sidecar:
+  description: "Mattermost WebSocket listener and post tool"
+  kind: daemon
+  daemon: true
+  display: headless
+  signals:
+    - topic: mattermost.mention
+      handler: handle-mention
+    - topic: mattermost.direct
+      handler: handle-direct
+    - topic: mattermost.message
+      handler: handle-message

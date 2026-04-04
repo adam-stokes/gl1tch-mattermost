@@ -1,0 +1,47 @@
+version: 2
+
+project_name: glitch-mattermost
+
+builds:
+  - id: glitch-mattermost
+    binary: glitch-mattermost
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags: [-s -w]
+
+archives:
+  - id: default
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+brews:
+  - name: glitch-mattermost
+    directory: Formula
+    repository:
+      owner: 8op-org
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/adam-stokes/gl1tch-mattermost"
+    description: "Mattermost integration plugin for gl1tch"
+    license: "MIT"
+    install: |
+      bin.install "glitch-mattermost"
+    test: |
+      assert_predicate bin/"glitch-mattermost", :exist?
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude: ["^chore", "^docs", "^ci", "^test"]
