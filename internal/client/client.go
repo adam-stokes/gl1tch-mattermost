@@ -163,6 +163,15 @@ func (c *Client) GetUserByUsername(username string) (*User, error) {
 	return &u, nil
 }
 
+// GetUsersByIDs fetches multiple users by their IDs in a single call.
+func (c *Client) GetUsersByIDs(ids []string) ([]User, error) {
+	var users []User
+	if err := c.post("/users/ids", ids, &users); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 // CreateDirectChannel opens (or returns existing) DM channel with another user.
 func (c *Client) CreateDirectChannel(myID, otherID string) (*Channel, error) {
 	var ch Channel

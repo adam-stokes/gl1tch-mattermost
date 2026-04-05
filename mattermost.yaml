@@ -1,16 +1,7 @@
 name: mattermost
-description: "Mattermost WebSocket listener and chat widget"
-kind: daemon
-daemon: true
-display: headless
-command: glitch-mattermost
-signals:
-  - topic: mattermost.mention
-    handler: handle-mention
-  - topic: mattermost.direct
-    handler: handle-direct
-  - topic: mattermost.message
-    handler: handle-message
+description: "Mattermost chat widget for gl1tch"
+kind: tool
+command: glitch-mattermost-chat
 mode:
   trigger: /mattermost
   logo: MATTERMOST

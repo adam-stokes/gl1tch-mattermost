@@ -1,0 +1,13 @@
+name: mattermost-daemon
+description: "Mattermost WebSocket listener — publishes mentions and DMs to the gl1tch event bus"
+kind: daemon
+daemon: true
+display: headless
+command: glitch-mattermost
+signals:
+  - topic: mattermost.mention
+    handler: handle-mention
+  - topic: mattermost.direct
+    handler: handle-direct
+  - topic: mattermost.message
+    handler: handle-message

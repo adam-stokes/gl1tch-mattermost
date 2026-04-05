@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -204,7 +203,29 @@ func listChannels(c *client.Client, me *client.User) error {
 	}
 
 	dms, _ := c.GetDirectChannels(me.ID)
-	sort.Slice(dms, func(i, j int) bool { return dms[i].Name < dms[j].Name })
+
+	// Resolve DM channel names: format is "id1__id2", extract the other user's ID.
+	var otherIDs []string
+	for _, dm := range dms {
+		if dm.Type != "D" {
+			continue
+		}
+		parts := strings.SplitN(dm.Name, "__", 2)
+		for _, p := range parts {
+			if p != me.ID {
+				otherIDs = append(otherIDs, p)
+				break
+			}
+		}
+	}
+	userMap := map[string]string{}
+	if len(otherIDs) > 0 {
+		if users, err := c.GetUsersByIDs(otherIDs); err == nil {
+			for _, u := range users {
+				userMap[u.ID] = u.Username
+			}
+		}
+	}
 
 	fmt.Println("── Channels ──────────────────────")
 	for _, l := range lines {
@@ -213,11 +234,26 @@ func listChannels(c *client.Client, me *client.User) error {
 	if len(dms) > 0 {
 		fmt.Println("── Direct Messages ───────────────")
 		for _, dm := range dms {
-			name := dm.DisplayName
-			if name == "" {
-				name = dm.Name
+			if dm.Type == "D" {
+				parts := strings.SplitN(dm.Name, "__", 2)
+				username := dm.Name
+				for _, p := range parts {
+					if p != me.ID {
+						if u, ok := userMap[p]; ok {
+							username = u
+						}
+						break
+					}
+				}
+				fmt.Printf("  @%s\n", username)
+			} else {
+				// Group message
+				name := dm.DisplayName
+				if name == "" {
+					name = dm.Name
+				}
+				fmt.Printf("  [group] %s\n", name)
 			}
-			fmt.Printf("  @%s\n", name)
 		}
 	}
 	fmt.Println()
