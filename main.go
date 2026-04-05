@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/adam-stokes/gl1tch-mattermost/internal/client"
+	"github.com/adam-stokes/gl1tch-mattermost/internal/config"
 	"github.com/adam-stokes/gl1tch-mattermost/internal/publish"
 	"github.com/adam-stokes/gl1tch-mattermost/internal/state"
 	"github.com/spf13/cobra"
@@ -46,7 +47,7 @@ Required environment variables:
   GLITCH_MATTERMOST_TOKEN  Personal access token or bot token`,
 	}
 
-	root.AddCommand(daemonCmd(), postCmd(), chatCmd())
+	root.AddCommand(daemonCmd(), postCmd(), chatCmd(), configureCmd())
 
 	// Default: daemon mode when invoked with no subcommand.
 	root.RunE = func(cmd *cobra.Command, args []string) error {
@@ -376,16 +377,64 @@ func runPost(channelID, rootID string) error {
 	return nil
 }
 
-// setup validates required env vars and returns a ready client + current user.
+// configureCmd saves the URL and token to ~/.config/glitch/plugins/mattermost.yaml.
+func configureCmd() *cobra.Command {
+	var url, token string
+
+	cmd := &cobra.Command{
+		Use:   "configure",
+		Short: "Save Mattermost connection settings to gl1tch config",
+		Example: `  glitch-mattermost configure --url https://chat.example.com --token mytoken
+  glitch-mattermost configure  # reads from GLITCH_MATTERMOST_URL / GLITCH_MATTERMOST_TOKEN`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if url == "" {
+				return fmt.Errorf("--url is required")
+			}
+			if token == "" {
+				return fmt.Errorf("--token is required")
+			}
+			cfg := config.Config{URL: url, Token: token}
+
+			// Verify credentials before saving.
+			c := client.New(url, token)
+			me, err := c.Me()
+			if err != nil {
+				return fmt.Errorf("authentication failed: %w", err)
+			}
+
+			p, err := config.Save(cfg)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Authenticated as @%s\nConfig saved to %s\n", me.Username, p)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&url, "url", os.Getenv("GLITCH_MATTERMOST_URL"), "Mattermost server URL")
+	cmd.Flags().StringVar(&token, "token", os.Getenv("GLITCH_MATTERMOST_TOKEN"), "Personal access token or bot token")
+
+	return cmd
+}
+
+// setup resolves credentials: config file → env vars, and returns a ready client + current user.
 func setup() (*client.Client, *client.User, string, error) {
-	serverURL := os.Getenv("GLITCH_MATTERMOST_URL")
-	token := os.Getenv("GLITCH_MATTERMOST_TOKEN")
+	cfg, _ := config.Load()
+
+	serverURL := cfg.URL
+	if serverURL == "" {
+		serverURL = os.Getenv("GLITCH_MATTERMOST_URL")
+	}
+	token := cfg.Token
+	if token == "" {
+		token = os.Getenv("GLITCH_MATTERMOST_TOKEN")
+	}
 
 	if serverURL == "" {
-		return nil, nil, "", fmt.Errorf("GLITCH_MATTERMOST_URL is required")
+		return nil, nil, "", fmt.Errorf("Mattermost URL not configured — run: glitch-mattermost configure --url <url> --token <token>")
 	}
 	if token == "" {
-		return nil, nil, "", fmt.Errorf("GLITCH_MATTERMOST_TOKEN is required")
+		return nil, nil, "", fmt.Errorf("Mattermost token not configured — run: glitch-mattermost configure --url <url> --token <token>")
 	}
 
 	c := client.New(serverURL, token)
