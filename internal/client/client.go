@@ -51,6 +51,20 @@ type Channel struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
 	Type        string `json:"type"` // "D" = direct, "O" = public, "P" = private
+	TeamID      string `json:"team_id"`
+}
+
+// Team is a minimal Mattermost team object.
+type Team struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+}
+
+// PostList is the response from the posts endpoint.
+type PostList struct {
+	Order []string        `json:"order"`
+	Posts map[string]Post `json:"posts"`
 }
 
 // Me returns the authenticated user.
@@ -86,6 +100,76 @@ func (c *Client) CreatePost(channelID, rootID, message string) (*Post, error) {
 		return nil, err
 	}
 	return &post, nil
+}
+
+// GetMyTeams returns the authenticated user's teams.
+func (c *Client) GetMyTeams() ([]Team, error) {
+	var teams []Team
+	if err := c.get("/users/me/teams", &teams); err != nil {
+		return nil, err
+	}
+	return teams, nil
+}
+
+// GetMyChannelsForTeam returns channels the user belongs to in a team.
+func (c *Client) GetMyChannelsForTeam(teamID string) ([]Channel, error) {
+	var channels []Channel
+	if err := c.get("/users/me/teams/"+teamID+"/channels", &channels); err != nil {
+		return nil, err
+	}
+	return channels, nil
+}
+
+// GetDirectChannels returns the user's open direct message channels.
+func (c *Client) GetDirectChannels(userID string) ([]Channel, error) {
+	var channels []Channel
+	if err := c.get(fmt.Sprintf("/users/%s/channels?include_deleted=false", userID), &channels); err != nil {
+		return nil, err
+	}
+	var direct []Channel
+	for _, ch := range channels {
+		if ch.Type == "D" || ch.Type == "G" {
+			direct = append(direct, ch)
+		}
+	}
+	return direct, nil
+}
+
+// GetPostsSince returns posts in a channel created after sinceMs (Unix ms).
+func (c *Client) GetPostsSince(channelID string, sinceMs int64) ([]Post, error) {
+	var pl PostList
+	if err := c.get(fmt.Sprintf("/channels/%s/posts?since=%d", channelID, sinceMs), &pl); err != nil {
+		return nil, err
+	}
+	posts := make([]Post, 0, len(pl.Order))
+	for _, id := range pl.Order {
+		if p, ok := pl.Posts[id]; ok {
+			posts = append(posts, p)
+		}
+	}
+	// Reverse: oldest first.
+	for i, j := 0, len(posts)-1; i < j; i, j = i+1, j-1 {
+		posts[i], posts[j] = posts[j], posts[i]
+	}
+	return posts, nil
+}
+
+// GetUserByUsername looks up a user by their username.
+func (c *Client) GetUserByUsername(username string) (*User, error) {
+	var u User
+	if err := c.get("/users/username/"+username, &u); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// CreateDirectChannel opens (or returns existing) DM channel with another user.
+func (c *Client) CreateDirectChannel(myID, otherID string) (*Channel, error) {
+	var ch Channel
+	if err := c.post("/channels/direct", []string{myID, otherID}, &ch); err != nil {
+		return nil, err
+	}
+	return &ch, nil
 }
 
 // WebSocketURL returns the WebSocket endpoint for this server.

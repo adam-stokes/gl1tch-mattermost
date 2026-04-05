@@ -7,11 +7,14 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/adam-stokes/gl1tch-mattermost/internal/client"
 	"github.com/adam-stokes/gl1tch-mattermost/internal/publish"
+	"github.com/adam-stokes/gl1tch-mattermost/internal/state"
 	"github.com/spf13/cobra"
 )
 
@@ -35,6 +38,7 @@ func rootCmd() *cobra.Command {
 		Short: "Mattermost integration for gl1tch",
 		Long: `glitch-mattermost connects to a Mattermost server and:
   - (daemon mode) listens for mentions and messages, publishing them to the gl1tch event bus
+  - (chat subcommand) interactive chat widget for gl1tch's /mattermost command
   - (post subcommand) posts a message to a channel or thread
 
 Required environment variables:
@@ -42,7 +46,7 @@ Required environment variables:
   GLITCH_MATTERMOST_TOKEN  Personal access token or bot token`,
 	}
 
-	root.AddCommand(daemonCmd(), postCmd())
+	root.AddCommand(daemonCmd(), postCmd(), chatCmd())
 
 	// Default: daemon mode when invoked with no subcommand.
 	root.RunE = func(cmd *cobra.Command, args []string) error {
@@ -115,6 +119,189 @@ func runDaemon(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "glitch-mattermost: busd publish error: %v\n", err)
 		}
 	})
+}
+
+// chatCmd is the gl1tch widget handler for /mattermost.
+// Each invocation reads one line from stdin and writes output to stdout.
+// State (active channel, poll cursor) is persisted between calls.
+func chatCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "chat",
+		Short: "Interactive chat widget (used by gl1tch /mattermost command)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runChat()
+		},
+	}
+}
+
+func runChat() error {
+	c, me, _, err := setup()
+	if err != nil {
+		return err
+	}
+
+	stdinBytes, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("reading stdin: %w", err)
+	}
+	input := strings.TrimSpace(string(stdinBytes))
+
+	s, _ := state.Load()
+	if s.MyUserID == "" {
+		s.MyUserID = me.ID
+	}
+
+	switch {
+	case input == "" || input == "/channels" || input == "/ls":
+		return listChannels(c, me)
+
+	case strings.HasPrefix(input, "/join "):
+		target := strings.TrimPrefix(input, "/join ")
+		return joinChannel(c, me, &s, target)
+
+	case strings.HasPrefix(input, "@"):
+		username := strings.TrimPrefix(input, "@")
+		return openDM(c, me, &s, username)
+
+	case input == "/who":
+		if s.ActiveChannelID == "" {
+			fmt.Println("No active channel. Use /channels to list, /join <name> or @<user> to open a DM.")
+			return nil
+		}
+		fmt.Printf("Active channel: %s\n", s.ActiveChannelName)
+		return nil
+
+	case input == "/clear":
+		_ = state.Clear()
+		fmt.Println("Session cleared.")
+		return nil
+
+	default:
+		// Send message to active channel.
+		return sendMessage(c, me, &s, input)
+	}
+}
+
+func listChannels(c *client.Client, me *client.User) error {
+	teams, err := c.GetMyTeams()
+	if err != nil {
+		return fmt.Errorf("fetching teams: %w", err)
+	}
+
+	var lines []string
+	for _, team := range teams {
+		channels, err := c.GetMyChannelsForTeam(team.ID)
+		if err != nil {
+			continue
+		}
+		for _, ch := range channels {
+			if ch.Type == "D" || ch.Type == "G" {
+				continue // DMs shown separately
+			}
+			lines = append(lines, fmt.Sprintf("  [%s] #%s", team.DisplayName, ch.Name))
+		}
+	}
+
+	dms, _ := c.GetDirectChannels(me.ID)
+	sort.Slice(dms, func(i, j int) bool { return dms[i].Name < dms[j].Name })
+
+	fmt.Println("── Channels ──────────────────────")
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	if len(dms) > 0 {
+		fmt.Println("── Direct Messages ───────────────")
+		for _, dm := range dms {
+			name := dm.DisplayName
+			if name == "" {
+				name = dm.Name
+			}
+			fmt.Printf("  @%s\n", name)
+		}
+	}
+	fmt.Println()
+	fmt.Println("Type /join <#channel> or @<username> to start chatting.")
+	return nil
+}
+
+func joinChannel(c *client.Client, me *client.User, s *state.State, target string) error {
+	target = strings.TrimPrefix(target, "#")
+
+	teams, err := c.GetMyTeams()
+	if err != nil {
+		return fmt.Errorf("fetching teams: %w", err)
+	}
+
+	for _, team := range teams {
+		channels, err := c.GetMyChannelsForTeam(team.ID)
+		if err != nil {
+			continue
+		}
+		for _, ch := range channels {
+			if ch.Name == target || ch.DisplayName == target || ch.ID == target {
+				s.ActiveChannelID = ch.ID
+				s.ActiveChannelName = "#" + ch.Name
+				s.LastPollAt = time.Now().UnixMilli()
+				_ = state.Save(*s)
+				fmt.Printf("Joined #%s — type your message.\n", ch.Name)
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("channel %q not found — use /channels to list available channels", target)
+}
+
+func openDM(c *client.Client, me *client.User, s *state.State, username string) error {
+	other, err := c.GetUserByUsername(username)
+	if err != nil {
+		return fmt.Errorf("user @%s not found: %w", username, err)
+	}
+
+	ch, err := c.CreateDirectChannel(me.ID, other.ID)
+	if err != nil {
+		return fmt.Errorf("opening DM: %w", err)
+	}
+
+	s.ActiveChannelID = ch.ID
+	s.ActiveChannelName = "@" + other.Username
+	s.LastPollAt = time.Now().UnixMilli()
+	_ = state.Save(*s)
+	fmt.Printf("DM opened with @%s — type your message.\n", other.Username)
+	return nil
+}
+
+func sendMessage(c *client.Client, me *client.User, s *state.State, message string) error {
+	if s.ActiveChannelID == "" {
+		fmt.Println("No active channel. Use /channels, /join <name>, or @<username> first.")
+		return nil
+	}
+	if message == "" {
+		return nil
+	}
+
+	// Post the message.
+	if _, err := c.CreatePost(s.ActiveChannelID, "", message); err != nil {
+		return fmt.Errorf("posting message: %w", err)
+	}
+
+	// Poll for new messages since last check (gives a moment for replies).
+	time.Sleep(300 * time.Millisecond)
+	posts, err := c.GetPostsSince(s.ActiveChannelID, s.LastPollAt)
+	if err == nil {
+		s.LastPollAt = time.Now().UnixMilli()
+		_ = state.Save(*s)
+
+		for _, p := range posts {
+			if p.UserID == me.ID {
+				continue // skip echo of own message
+			}
+			ts := time.UnixMilli(p.CreateAt).Format("15:04")
+			fmt.Printf("[%s] %s\n", ts, p.Message)
+		}
+	}
+
+	return nil
 }
 
 // postCmd reads a message from stdin and posts it to Mattermost.
@@ -209,9 +396,7 @@ func setup() (*client.Client, *client.User, string, error) {
 
 	sockPath, err := publish.SocketPath()
 	if err != nil {
-		// Non-fatal: daemon can run without BUSD.
 		sockPath = ""
-		fmt.Fprintf(os.Stderr, "glitch-mattermost: warning: cannot resolve busd socket: %v\n", err)
 	}
 
 	return c, me, sockPath, nil

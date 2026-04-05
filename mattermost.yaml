@@ -1,0 +1,29 @@
+name: mattermost
+description: "Mattermost WebSocket listener and chat widget"
+kind: daemon
+daemon: true
+display: headless
+command: glitch-mattermost
+signals:
+  - topic: mattermost.mention
+    handler: handle-mention
+  - topic: mattermost.direct
+    handler: handle-direct
+  - topic: mattermost.message
+    handler: handle-message
+mode:
+  trigger: /mattermost
+  logo: MATTERMOST
+  speaker: MATTERMOST
+  exit_command: /exit
+  on_activate: /channels
+  slash_hint: "— open Mattermost chat"
+  slash_commands:
+    - cmd: /channels
+      hint: list channels and DMs
+    - cmd: /join
+      hint: join a channel (/join general)
+    - cmd: /who
+      hint: show active channel
+    - cmd: /clear
+      hint: clear session
